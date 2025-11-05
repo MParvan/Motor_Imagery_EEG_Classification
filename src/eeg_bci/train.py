@@ -7,6 +7,8 @@ from tqdm import tqdm
 from .data import load_mi_data, get_loso_splits, get_within_subject_splits, zscore_fit_transform_train_test
 from .models.eegnet import EEGNet
 from .models.shallowconvnet import ShallowConvNet
+from .models.deepconvnet import DeepConvNet
+from .models.tcn import TCN 
 from .utils import set_seed
 
 class EEGDataset(Dataset):
@@ -23,6 +25,10 @@ def build_model(name, n_channels, n_classes):
         return EEGNet(n_channels=n_channels, n_classes=n_classes)
     elif name in ["shallow", "shallowconvnet", "shallow_convnet"]:
         return ShallowConvNet(n_channels=n_channels, n_classes=n_classes)
+    elif name in ["deep", "deepconvnet"]:
+        return DeepConvNet(n_channels=n_channels, n_classes=n_classes)
+    elif name in ["tcn", "eeG-tcnet", "tcnet"]:
+        return TCN(n_channels=n_channels, n_classes=n_classes)
     else:
         raise ValueError("Unknown model: %s" % name)
 

@@ -9,6 +9,11 @@ from .models.eegnet import EEGNet
 from .models.shallowconvnet import ShallowConvNet
 from .models.deepconvnet import DeepConvNet
 from .models.tcn import TCN 
+from .models.eeg_inception import EEGInception
+from .models.fbcnet import FBCNet
+from .models.eeg_tcnet import EEGTCNet
+from .models.mbma_ciac_lite import MBMA_CIAC_Lite
+
 from .utils import set_seed
 
 class EEGDataset(Dataset):
@@ -29,6 +34,12 @@ def build_model(name, n_channels, n_classes):
         return DeepConvNet(n_channels=n_channels, n_classes=n_classes)
     elif name in ["tcn", "eeG-tcnet", "tcnet"]:
         return TCN(n_channels=n_channels, n_classes=n_classes)
+    elif name in ["eeg-inception", "eeginception", "inception"]:
+        return EEGInception(n_channels=n_channels, n_classes=n_classes)
+    elif name in ["fbcnet", "fbc"]:
+        return FBCNet(n_channels=n_channels, n_classes=n_classes)
+    elif name in ["mbma", "ciac", "mbma_ciac", "ciacnet"]:
+        return MBMA_CIAC_Lite(n_channels=n_channels, n_classes=n_classes)
     else:
         raise ValueError("Unknown model: %s" % name)
 
@@ -160,7 +171,7 @@ def run_within_subject(args):
 def main():
     parser = argparse.ArgumentParser(description="EEG DL on BCI-IV 2a/2b via MOABB")
     parser.add_argument("--dataset", choices=["2a","2b"], required=True)
-    parser.add_argument("--model", choices=["eegnet","shallow","deepconvnet","tcn"], default="eegnet")
+    parser.add_argument("--model", choices=["eegnet","shallow","deepconvnet","tcn","eeginception","fbcnet","mbma_ciac"], default="eegnet")
     parser.add_argument("--mode", choices=["cross_subject","within_subject"], default="cross_subject")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=64)

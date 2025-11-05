@@ -13,7 +13,7 @@ def _get_dataset_and_events(name: str):
     elif name in ["2b", "bnci2014_004", "bnci2014-004"]:
         return BNCI2014_004(), ["left_hand", "right_hand"]
     else:
-        raise ValueError("dataset must be '2a' or '2b'")
+        raise ValueError("Dataset must be '2a' or '2b'")
 
 def load_mi_data(dataset: str, subjects: Optional[List[int]] = None,
                  tmin: float = 0.0, tmax: float = 4.0,

@@ -160,7 +160,7 @@ def run_within_subject(args):
 def main():
     parser = argparse.ArgumentParser(description="EEG DL on BCI-IV 2a/2b via MOABB")
     parser.add_argument("--dataset", choices=["2a","2b"], required=True)
-    parser.add_argument("--model", choices=["eegnet","shallow"], default="eegnet")
+    parser.add_argument("--model", choices=["eegnet","shallow","deepconvnet","tcn"], default="eegnet")
     parser.add_argument("--mode", choices=["cross_subject","within_subject"], default="cross_subject")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=64)

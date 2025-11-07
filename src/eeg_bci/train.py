@@ -87,6 +87,7 @@ def run_cross_subject(args):
     n_classes = len(np.unique(y))
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     results = []
+    accuracies = []
     out_dir = os.path.join("outputs", args.dataset, "cross_subject", args.model, time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(out_dir, exist_ok=True)
     fold = 0
@@ -137,6 +138,7 @@ def run_within_subject(args):
     out_dir = os.path.join("outputs", args.dataset, "within_subject", args.model, time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(out_dir, exist_ok=True)
     results = []
+    accuracies = []
     current_sub = None
     fold = 0
     for train_idx, val_idx, sub in get_within_subject_splits(groups, y, n_folds=5):
@@ -164,9 +166,11 @@ def run_within_subject(args):
         acc = accuracy_score(gts, preds)
         f1 = f1_score(gts, preds, average="macro")
         results.append({"fold": fold, "subject": int(sub), "val_best_acc": float(best_val), "fold_acc": float(acc), "fold_f1_macro": float(f1)})
+        acc = accuracy_score(gts, preds)
     with open(os.path.join(out_dir, "results.json"), "w") as f:
         json.dump(results, f, indent=2)
     print("Saved:", out_dir)
+    print("Mean accuracy for all subjects: ", np.mean(accuracies))
 
 def main():
     parser = argparse.ArgumentParser(description="EEG DL on BCI-IV 2a/2b via MOABB")

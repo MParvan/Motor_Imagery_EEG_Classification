@@ -13,6 +13,8 @@ from .models.eeg_inception import EEGInception
 from .models.fbcnet import FBCNet
 from .models.eeg_tcnet import EEGTCNet
 from .models.mbma_ciac_lite import MBMA_CIAC_Lite
+from . import augment
+from augment import Compose, AddGaussianNoise, AmplitudeScale, TimeShift, TimeMask, TimeWarp, FreqShift, BandstopDropout, ChannelDropout, MixupBatch, CutCatBatch
 
 from .utils import set_seed
 
@@ -147,6 +149,12 @@ def run_within_subject(args):
             fold = 0
         fold += 1
         Xtr, Xva, _ = zscore_fit_transform_train_test(X, train_idx, val_idx)
+        # Add data augmentation here if needed
+        if args.augment != "none":
+            aug_class = getattr(augment, args.augment)
+            augmentation = Compose([aug_class()])
+            Xtr = augmentation(Xtr)
+            Xva = augmentation(Xva)
         ds_tr = EEGDataset(Xtr, y[train_idx])
         ds_va = EEGDataset(Xva, y[val_idx])
         tl = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, drop_last=True)
@@ -177,6 +185,7 @@ def main():
     parser.add_argument("--dataset", choices=["2a","2b"], required=True)
     parser.add_argument("--model", choices=["eegnet","shallow","deepconvnet","tcn","eeginception","fbcnet","mbma_ciac"], default="eegnet")
     parser.add_argument("--mode", choices=["cross_subject","within_subject"], default="cross_subject")
+    parser.add_argument("--augment", choices=["none","GaussianNoise","AmplitudeScale","TimeShift","TimeMask","TimeWarp","FreqShift","BandstopDropout","ChannelDropout","MixupBatch","CutCatBatch"], default="none")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)

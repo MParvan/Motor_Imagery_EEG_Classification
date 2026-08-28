@@ -18,8 +18,9 @@ pip install -r requirements.txt
 # 2) Train & evaluate EEGNet on 2a with cross-subject LOSO
 python -m src.eeg_bci.train --dataset 2a --model eegnet --mode cross_subject --epochs 40 --batch-size 64
 
-# 3) Within-subject (per subject 5-fold CV) on 2b
-python -m src.eeg_bci.train --dataset 2b --model shallow --mode within_subject --epochs 30
+# 3) Within-subject session-transfer uses dataset development/test sessions.
+# The default validation grouping is `run` for 2a and `session` for 2b.
+# python -m src.eeg_bci.train --dataset 2a --model shallow --mode within_subject --epochs 30
 ```
 
 Outputs (checkpoints, metrics) are stored under `outputs/`.
@@ -35,13 +36,13 @@ MOABB will **auto-download** the data on first run into your local cache (MNE da
 ## Protocols
 
 - **Cross-subject**: Leave-One-Subject-Out (LOSO). Train on N-1 subjects, test on the held-out subject. Reports per-fold and macro stats.
-- **Within-subject**: For each subject, 5-fold stratified CV on that subject's trials.
+- **Within-subject**: Session-aware subject-specific evaluation using dataset-specific development/test sessions and dataset-appropriate validation grouping.
 
 Key preprocessing steps (via MOABB + MNE):
 - Band-pass (default `fmin=4, fmax=38` Hz), notch at 50/60 Hz if provided by MOABB defaults.
 - Epoching w.r.t. MI cues using [`MotorImagery` paradigm].
 - Optional resampling to 128 Hz (default).
-- Standardization (z-score) **fit on training data only**, applied to validation/test.
+- Standardization (z-score) **fit on training data only**, using per-channel statistics pooled across training trials and time samples, then applied to validation/test.
 
 ## Models
 - **EEGNet** (depthwise-separable CNN) — compact and strong baseline.

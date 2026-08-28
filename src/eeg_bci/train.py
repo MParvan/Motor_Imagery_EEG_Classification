@@ -6,6 +6,12 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from .classical import (
+    CLASSICAL_MODEL_CHOICES,
+    DEFAULT_CSP_COMPONENTS,
+    build_classical_estimator,
+    fit_predict_classical_split,
+)
 from .data import (
     DevelopmentSessionConfig,
     EEGTrials,
@@ -17,6 +23,9 @@ from .data import (
     load_mi_data,
 )
 from .utils import ZScoreScalerTorch, set_seed
+
+MOTOR_IMAGERY_FMIN_HZ = 8.0
+MOTOR_IMAGERY_FMAX_HZ = 32.0
 
 
 def _import_torch():
@@ -39,11 +48,20 @@ def _import_tqdm():
 
 
 def create_arg_parser():
-    parser = argparse.ArgumentParser(description="EEG DL on BCI-IV 2a/2b via MOABB")
+    parser = argparse.ArgumentParser(description="EEG baselines on BCI-IV 2a/2b via MOABB")
     parser.add_argument("--dataset", choices=["2a", "2b"], required=True)
     parser.add_argument(
         "--model",
-        choices=["eegnet", "shallow", "deepconvnet", "tcn", "eeginception", "fbcnet", "mbma_ciac"],
+        choices=[
+            "eegnet",
+            "shallow",
+            "deepconvnet",
+            "tcn",
+            "eeginception",
+            "fbcnet",
+            "mbma_ciac",
+            *CLASSICAL_MODEL_CHOICES,
+        ],
         default="eegnet",
     )
     parser.add_argument("--mode", choices=["cross_subject", "within_subject"], default="cross_subject")
@@ -68,6 +86,12 @@ def create_arg_parser():
         type=int,
         default=1,
         help="Number of development groups to reserve for validation in within-subject mode.",
+    )
+    parser.add_argument(
+        "--csp-components",
+        type=int,
+        default=DEFAULT_CSP_COMPONENTS,
+        help=f"Number of CSP components for the CSP+LDA using OAS covariance estimation baseline; default {DEFAULT_CSP_COMPONENTS}, clipped to the channel count.",
     )
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -193,6 +217,20 @@ def _parse_session_config(dataset: str, raw_json: Optional[str]) -> DevelopmentS
     return DevelopmentSessionConfig.from_json(dataset_name=dataset, raw_json=raw_json)
 
 
+def _is_classical_model(name: str) -> bool:
+    return name.lower() in CLASSICAL_MODEL_CHOICES
+
+
+def _load_trials(dataset: str, resample: int, subjects: Optional[List[int]] = None) -> EEGTrials:
+    return load_mi_data(
+        dataset,
+        subjects=subjects,
+        resample=resample,
+        fmin=MOTOR_IMAGERY_FMIN_HZ,
+        fmax=MOTOR_IMAGERY_FMAX_HZ,
+    )
+
+
 def _require_validation_config(args) -> ValidationSplitConfig:
     group_by = args.validation_group_by or get_default_validation_group_by(args.dataset)
     return ValidationSplitConfig(
@@ -228,10 +266,108 @@ def _collect_split_metadata(trials: EEGTrials, split) -> Dict[str, List[str]]:
     }
 
 
+def _classical_split_payload(trials, split, estimator, accuracy_score, confusion_matrix, f1_score):
+    val_preds, test_preds = fit_predict_classical_split(estimator, trials, split)
+    val_gts = trials.y[list(split.val_idx)]
+    test_gts = trials.y[list(split.test_idx)]
+    return {
+        "val_best_acc": float(accuracy_score(val_gts, val_preds)),
+        "test_acc": float(accuracy_score(test_gts, test_preds)),
+        "test_f1_macro": float(f1_score(test_gts, test_preds, average="macro")),
+        "confusion_matrix": confusion_matrix(test_gts, test_preds).tolist(),
+        **_collect_split_metadata(trials, split),
+    }
+
+
+def run_cross_subject_classical(args):
+    accuracy_score, confusion_matrix, f1_score = _import_training_metrics()
+    trials = _load_trials(args.dataset, resample=args.resample)
+    n_channels = trials.X.shape[1]
+    n_classes = len(np.unique(trials.y))
+    out_dir = os.path.join("outputs", args.dataset, "cross_subject", args.model, time.strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(out_dir, exist_ok=True)
+    results = []
+    accuracies = []
+    for fold, split in enumerate(get_loso_subject_splits(trials), start=1):
+        estimator = build_classical_estimator(
+            args.model,
+            n_channels=n_channels,
+            n_classes=n_classes,
+            csp_components=args.csp_components,
+        )
+        fold_payload = _classical_split_payload(
+            trials,
+            split,
+            estimator,
+            accuracy_score,
+            confusion_matrix,
+            f1_score,
+        )
+        fold_payload.update(
+            {
+                "fold": fold,
+                "test_subject": split.subject,
+                "val_subject": split.val_subject,
+            }
+        )
+        accuracies.append(fold_payload["test_acc"])
+        results.append(fold_payload)
+    payload = {"folds": results, "summary": {"mean_test_acc": summarize_accuracy(accuracies)}}
+    with open(os.path.join(out_dir, "results.json"), "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    print("Saved:", out_dir)
+    print("Mean accuracy for all subjects:", payload["summary"]["mean_test_acc"])
+
+
+def run_within_subject_classical(args):
+    accuracy_score, confusion_matrix, f1_score = _import_training_metrics()
+    trials = _load_trials(args.dataset, resample=args.resample)
+    session_config = _parse_session_config(args.dataset, args.session_role_map_json)
+    validation_config = _require_validation_config(args)
+    n_channels = trials.X.shape[1]
+    n_classes = len(np.unique(trials.y))
+    out_dir = os.path.join("outputs", args.dataset, "within_subject", args.model, time.strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(out_dir, exist_ok=True)
+    results = []
+    accuracies = []
+    for fold, split in enumerate(
+        get_subject_specific_splits(
+            trials,
+            dataset=args.dataset,
+            validation_config=validation_config,
+            session_config=session_config,
+        ),
+        start=1,
+    ):
+        estimator = build_classical_estimator(
+            args.model,
+            n_channels=n_channels,
+            n_classes=n_classes,
+            csp_components=args.csp_components,
+        )
+        print(f"Evaluating subject {split.subject}, fold {fold}...")
+        fold_payload = _classical_split_payload(
+            trials,
+            split,
+            estimator,
+            accuracy_score,
+            confusion_matrix,
+            f1_score,
+        )
+        fold_payload["subject"] = split.subject
+        accuracies.append(fold_payload["test_acc"])
+        results.append(fold_payload)
+    payload = {"folds": results, "summary": {"mean_test_acc": summarize_accuracy(accuracies)}}
+    with open(os.path.join(out_dir, "results.json"), "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    print("Saved:", out_dir)
+    print("Mean accuracy for all subjects:", payload["summary"]["mean_test_acc"])
+
+
 def run_cross_subject(args):
     torch, _, _ = _import_torch()
     accuracy_score, confusion_matrix, f1_score = _import_training_metrics()
-    trials = load_mi_data(args.dataset, resample=args.resample)
+    trials = _load_trials(args.dataset, resample=args.resample)
     n_channels = trials.X.shape[1]
     n_classes = len(np.unique(trials.y))
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
@@ -281,7 +417,7 @@ def run_cross_subject(args):
 def run_within_subject(args):
     torch, _, _ = _import_torch()
     accuracy_score, confusion_matrix, f1_score = _import_training_metrics()
-    trials = load_mi_data(args.dataset, resample=args.resample)
+    trials = _load_trials(args.dataset, resample=args.resample)
     session_config = _parse_session_config(args.dataset, args.session_role_map_json)
     validation_config = _require_validation_config(args)
     n_channels = trials.X.shape[1]
@@ -341,7 +477,12 @@ def main():
     parser = create_arg_parser()
     args = parser.parse_args()
     set_seed(args.seed)
-    if args.mode == "cross_subject":
+    if _is_classical_model(args.model):
+        if args.mode == "cross_subject":
+            run_cross_subject_classical(args)
+        else:
+            run_within_subject_classical(args)
+    elif args.mode == "cross_subject":
         run_cross_subject(args)
     else:
         run_within_subject(args)

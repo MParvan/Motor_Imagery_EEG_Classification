@@ -1,6 +1,6 @@
-# EEG Deep Learning Baselines on BCI Competition IV (2a & 2b)
+# EEG Baselines on BCI Competition IV (2a & 2b)
 
-Reproducible PyTorch baselines (EEGNet & ShallowConvNet) for **motor imagery** on **BCI Competition IV** datasets:
+Reproducible motor-imagery baselines for **BCI Competition IV** datasets:
 - **2a** = BNCI2014-001 (4 classes: left hand, right hand, feet, tongue)
 - **2b** = BNCI2014-004 (2 classes: left hand, right hand)
 
@@ -18,7 +18,10 @@ pip install -r requirements.txt
 # 2) Train & evaluate EEGNet on 2a with cross-subject LOSO
 python -m src.eeg_bci.train --dataset 2a --model eegnet --mode cross_subject --epochs 40 --batch-size 64
 
-# 3) Within-subject session-transfer uses dataset development/test sessions.
+# 3) Train the CSP + LDA baseline on the same LOSO protocol
+python -m src.eeg_bci.train --dataset 2a --model csp_lda --mode cross_subject --csp-components 4
+
+# 4) Within-subject session-transfer uses dataset development/test sessions.
 # The default validation grouping is `run` for 2a and `session` for 2b.
 # python -m src.eeg_bci.train --dataset 2a --model shallow --mode within_subject --epochs 30
 ```
@@ -39,7 +42,7 @@ MOABB will **auto-download** the data on first run into your local cache (MNE da
 - **Within-subject**: Session-aware subject-specific evaluation using dataset-specific development/test sessions and dataset-appropriate validation grouping.
 
 Key preprocessing steps (via MOABB + MNE):
-- Band-pass (default `fmin=4, fmax=38` Hz), notch at 50/60 Hz if provided by MOABB defaults.
+- MotorImagery epochs use the fixed `8-32` Hz band-pass, with notch at 50/60 Hz if provided by MOABB defaults.
 - Epoching w.r.t. MI cues using [`MotorImagery` paradigm].
 - Optional resampling to 128 Hz (default).
 - Standardization (z-score) **fit on training data only**, using per-channel statistics pooled across training trials and time samples, then applied to validation/test.
@@ -47,8 +50,14 @@ Key preprocessing steps (via MOABB + MNE):
 ## Models
 - **EEGNet** (depthwise-separable CNN) — compact and strong baseline.
 - **ShallowConvNet** (Schirrmeister et al.) — simple, fast, robust.
+- **CSP + LDA using OAS covariance estimation** — covariance-based spatial filtering followed by linear discriminant analysis.
+- **Riemannian MDM** — covariance estimation followed by minimum-distance-to-mean classification.
 
 Model hyperparameters are exposed as CLI flags; see `python -m src.eeg_bci.train -h`.
+
+## Classical preprocessing
+
+The classical baselines operate directly on the same MOABB-parsed epochs and estimate covariance per trial. They do **not** apply the neural per-channel z-score scaler. The CSP baseline defaults to 4 components, clipped to the available channel count, and the Riemannian baseline uses covariance estimation plus a minimum-distance-to-mean classifier.
 
 ## Citation
 If you use this code, please cite the data owners and MOABB:

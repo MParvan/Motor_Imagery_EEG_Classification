@@ -1,5 +1,6 @@
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -16,7 +17,20 @@ from src.eeg_bci.data import (
     get_subject_specific_splits,
     split_development_train_validation,
 )
-from src.eeg_bci.train import create_arg_parser, summarize_accuracy
+from src.eeg_bci.classical import (
+    CLASSICAL_MODEL_CHOICES,
+    DEFAULT_CSP_COMPONENTS,
+    _effective_csp_components,
+    build_classical_estimator,
+    fit_predict_classical_split,
+)
+from src.eeg_bci.train import (
+    MOTOR_IMAGERY_FMAX_HZ,
+    MOTOR_IMAGERY_FMIN_HZ,
+    _load_trials,
+    create_arg_parser,
+    summarize_accuracy,
+)
 from src.eeg_bci.utils import ZScoreScalerTorch
 
 
@@ -78,6 +92,33 @@ def make_2b_like_trials():
                 )
             )
             value += 1.0
+    return EEGTrials(
+        X=np.stack(rows, axis=0),
+        y=np.asarray(labels, dtype=np.int64),
+        metadata={
+            "subject": np.asarray(subjects),
+            "session": np.asarray(sessions),
+            "run": np.asarray(runs),
+        },
+    ).validate()
+
+
+def make_classical_trials(n_subjects=3, n_classes=4, trials_per_subject=12, n_channels=8, n_times=32):
+    rng = np.random.default_rng(123)
+    subjects = []
+    sessions = []
+    runs = []
+    labels = []
+    rows = []
+    for subject_index, subject in enumerate([f"S{i}" for i in range(1, n_subjects + 1)]):
+        for trial_index in range(trials_per_subject):
+            label = trial_index % n_classes
+            subjects.append(subject)
+            sessions.append(f"session_{trial_index % 2}")
+            runs.append(f"run_{trial_index % 3}")
+            labels.append(label)
+            signal = rng.normal(loc=subject_index + label * 0.25, scale=0.5, size=(n_channels, n_times)).astype(np.float32)
+            rows.append(signal)
     return EEGTrials(
         X=np.stack(rows, axis=0),
         y=np.asarray(labels, dtype=np.int64),
@@ -277,6 +318,12 @@ class ScalerTests(unittest.TestCase):
 
 
 class AggregationAndCliTests(unittest.TestCase):
+    def test_classical_model_choices_are_advertised(self):
+        parser = create_arg_parser()
+        model_action = next(action for action in parser._actions if action.dest == "model")
+        for name in CLASSICAL_MODEL_CHOICES:
+            self.assertIn(name, model_action.choices)
+
     def test_accuracy_summary_is_finite_and_correct(self):
         mean_acc = summarize_accuracy([0.25, 0.5, 1.0])
         self.assertTrue(math.isfinite(mean_acc))
@@ -299,6 +346,98 @@ class AggregationAndCliTests(unittest.TestCase):
         self.assertIsNotNone(data_module)
         self.assertIsNotNone(train_module)
         self.assertIsNotNone(utils_module)
+
+
+class ClassicalBaselineTests(unittest.TestCase):
+    def test_default_csp_component_count_is_explicitly_four(self):
+        estimator = build_classical_estimator("csp_lda", n_channels=8, n_classes=4)
+        self.assertEqual(DEFAULT_CSP_COMPONENTS, 4)
+        self.assertEqual(estimator.named_steps["csp"].nfilter, 4)
+
+    def test_invalid_csp_component_count_is_rejected(self):
+        with self.assertRaises(ValueError):
+            build_classical_estimator("csp_lda", n_channels=8, n_classes=4, csp_components=0)
+
+    def test_csp_components_match_channel_count_when_equal(self):
+        estimator = build_classical_estimator("csp_lda", n_channels=3, n_classes=4, csp_components=3)
+        self.assertEqual(estimator.named_steps["csp"].nfilter, 3)
+
+    def test_csp_components_clip_to_channel_count(self):
+        estimator = build_classical_estimator("csp_lda", n_channels=3, n_classes=4, csp_components=6)
+        self.assertEqual(estimator.named_steps["csp"].nfilter, 3)
+
+    def test_csp_component_count_requires_positive_channels(self):
+        with self.assertRaises(ValueError):
+            _effective_csp_components(1, 0)
+
+    def test_mi_loader_uses_explicit_8_to_32_hz_band_without_download(self):
+        captured_kwargs = {}
+
+        fake_trials = EEGTrials(
+            X=np.zeros((2, 2, 4), dtype=np.float32),
+            y=np.array([0, 1], dtype=np.int64),
+            metadata={
+                "subject": np.asarray(["S1", "S1"]),
+                "session": np.asarray(["0train", "1test"]),
+                "run": np.asarray(["run_1", "run_2"]),
+            },
+        ).validate()
+
+        with mock.patch("src.eeg_bci.train.load_mi_data", return_value=fake_trials) as load_mock:
+            trials = _load_trials("2b", resample=128)
+
+        captured_kwargs = load_mock.call_args.kwargs
+        self.assertEqual(captured_kwargs["fmin"], MOTOR_IMAGERY_FMIN_HZ)
+        self.assertEqual(captured_kwargs["fmax"], MOTOR_IMAGERY_FMAX_HZ)
+        self.assertEqual(captured_kwargs["resample"], 128)
+        self.assertIs(trials, fake_trials)
+
+    def test_csp_lda_supports_multiclass_predictions(self):
+        trials = make_classical_trials(n_subjects=3, n_classes=4, trials_per_subject=12, n_channels=8, n_times=32)
+        train_idx = tuple(range(0, 24))
+        test_idx = tuple(range(24, 36))
+        estimator = build_classical_estimator("csp_lda", n_channels=8, n_classes=4, csp_components=4)
+        estimator.fit(trials.X[list(train_idx)], trials.y[list(train_idx)])
+        preds = estimator.predict(trials.X[list(test_idx)])
+        self.assertEqual(preds.shape, (len(test_idx),))
+        self.assertTrue(set(np.unique(preds)).issubset(set(trials.y[list(train_idx)])))
+
+    def test_riemann_mdm_supports_binary_predictions(self):
+        trials = make_classical_trials(n_subjects=3, n_classes=2, trials_per_subject=10, n_channels=6, n_times=24)
+        train_idx = tuple(range(0, 20))
+        test_idx = tuple(range(20, 30))
+        estimator = build_classical_estimator("riemann_mdm", n_channels=6, n_classes=2)
+        estimator.fit(trials.X[list(train_idx)], trials.y[list(train_idx)])
+        preds = estimator.predict(trials.X[list(test_idx)])
+        self.assertEqual(preds.shape, (len(test_idx),))
+        self.assertTrue(set(np.unique(preds)).issubset(set(trials.y[list(train_idx)])))
+
+    def test_fit_predict_wrapper_uses_split_indices_without_leakage(self):
+        trials = make_classical_trials(n_subjects=3, n_classes=2, trials_per_subject=6, n_channels=4, n_times=16)
+        split = next(get_loso_subject_splits(trials))
+
+        class RecordingEstimator:
+            def __init__(self):
+                self.fit_X = None
+                self.fit_y = None
+                self.predict_shapes = []
+
+            def fit(self, X, y):
+                self.fit_X = np.array(X, copy=True)
+                self.fit_y = np.array(y, copy=True)
+                return self
+
+            def predict(self, X):
+                self.predict_shapes.append(X.shape)
+                return np.zeros(X.shape[0], dtype=np.int64)
+
+        estimator = RecordingEstimator()
+        val_preds, test_preds = fit_predict_classical_split(estimator, trials, split)
+        np.testing.assert_array_equal(estimator.fit_X, trials.X[list(split.train_idx)])
+        np.testing.assert_array_equal(estimator.fit_y, trials.y[list(split.train_idx)])
+        self.assertEqual(estimator.predict_shapes, [trials.X[list(split.val_idx)].shape, trials.X[list(split.test_idx)].shape])
+        self.assertEqual(val_preds.shape, (len(split.val_idx),))
+        self.assertEqual(test_preds.shape, (len(split.test_idx),))
 
 
 if __name__ == "__main__":
